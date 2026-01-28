@@ -1,0 +1,5 @@
+{
+  "name": "Soldiom",
+  "description": "An evidence-based AI assistant with expert roles, utilizing Google Search grounding for verified, cited answers.",
+  "requestFramePermissions": []
+}
