@@ -4,7 +4,9 @@ import { ROLES, Icons } from './constants';
 import { Message, RoleType, RoleConfig } from './types';
 import Sidebar from './components/Sidebar';
 import MessageBubble from './components/MessageBubble';
+import ToolsPanel from './components/ToolsPanel';
 import { createChat, sendMessageStream } from './services/geminiService';
+import * as HF from './services/huggingFaceService';
 
 export default function App() {
   const [currentRole, setCurrentRole] = useState<RoleConfig>(ROLES[0]);
@@ -12,9 +14,15 @@ export default function App() {
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(false);
   const [isThinkingEnabled, setIsThinkingEnabled] = useState(false);
   const [isRoleMenuOpen, setIsRoleMenuOpen] = useState(false);
   
+  // Voice State
+  const [isRecording, setIsRecording] = useState(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+
   // Chat session ref to persist across renders
   const chatSessionRef = useRef<Chat | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -44,20 +52,71 @@ export default function App() {
     }
   };
 
-  // Re-init chat when Role or Thinking Mode changes
   useEffect(() => {
     initChat();
-    // Clear messages if switching roles? No, let's keep it fluid or just reset on manual 'New Chat'
-    // For this design, we usually keep history until "New Chat" is clicked.
-    // However, switching expert "mid-stream" technically changes the system prompt for *new* messages in a new session
-    // For simplicity, we just re-init the session reference.
   }, [currentRole, isThinkingEnabled]);
 
   const handleNewChat = () => {
       setMessages([]);
       setInputValue('');
       initChat();
-      setSidebarOpen(false); // Close sidebar on mobile if open
+      setSidebarOpen(false);
+  };
+
+  const handleVoiceInput = async () => {
+    if (isRecording) {
+      // Stop recording
+      mediaRecorderRef.current?.stop();
+      setIsRecording(false);
+    } else {
+      // Start recording
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const mediaRecorder = new MediaRecorder(stream);
+        mediaRecorderRef.current = mediaRecorder;
+        audioChunksRef.current = [];
+
+        mediaRecorder.ondataavailable = (event) => {
+          if (event.data.size > 0) {
+            audioChunksRef.current.push(event.data);
+          }
+        };
+
+        mediaRecorder.onstop = async () => {
+          const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/wav' });
+          setIsLoading(true); // temporary loading indicator for transcription
+          try {
+             const text = await HF.transcribeAudio(audioBlob);
+             setInputValue(prev => prev + (prev ? ' ' : '') + text);
+          } catch (e) {
+             console.error("Transcription failed", e);
+             alert("Transcription failed. Check console/HF_TOKEN.");
+          } finally {
+             setIsLoading(false);
+          }
+          // Stop all tracks
+          stream.getTracks().forEach(track => track.stop());
+        };
+
+        mediaRecorder.start();
+        setIsRecording(true);
+      } catch (e) {
+        console.error("Mic access denied", e);
+        alert("Microphone access denied or not available.");
+      }
+    }
+  };
+
+  const handleToolResult = (content: string, type: 'text' | 'image' | 'code') => {
+      // Add tool output as a system message
+      const msg: Message = {
+          id: Date.now().toString(),
+          role: 'system',
+          text: type === 'image' ? 'Image Generated' : content,
+          image: type === 'image' ? content : undefined,
+          timestamp: Date.now()
+      };
+      setMessages(prev => [...prev, msg]);
   };
 
   const handleSendMessage = async () => {
@@ -137,6 +196,13 @@ export default function App() {
         onNewChat={handleNewChat}
       />
 
+      {/* Tools Panel */}
+      <ToolsPanel 
+        isOpen={toolsOpen} 
+        onClose={() => setToolsOpen(false)} 
+        onResult={handleToolResult} 
+      />
+
       {/* Main Content */}
       <div className="flex-1 flex flex-col h-full relative min-w-0">
         
@@ -190,8 +256,18 @@ export default function App() {
                 )}
             </div>
           </div>
-          <div className="w-8 h-8 rounded-full bg-purple-600 flex items-center justify-center text-white font-bold text-xs cursor-pointer">
-              S
+          
+          <div className="flex items-center gap-2">
+             <button 
+               onClick={() => setToolsOpen(true)}
+               className="flex items-center gap-2 px-3 py-1.5 bg-black text-white rounded-full text-xs font-medium hover:bg-gray-800 transition-colors"
+             >
+                <Icons.Tools />
+                <span className="hidden md:inline">Tools</span>
+             </button>
+             <div className="w-8 h-8 rounded-full bg-purple-600 flex items-center justify-center text-white font-bold text-xs cursor-pointer">
+                 S
+             </div>
           </div>
         </div>
 
@@ -238,7 +314,11 @@ export default function App() {
                   
                   {/* Attach Button */}
                   <div className="absolute left-3 bottom-3 md:bottom-3.5">
-                      <button className="p-2 text-gray-500 hover:bg-gray-200 rounded-full transition-colors">
+                      <button 
+                        onClick={() => setToolsOpen(!toolsOpen)}
+                        className="p-2 text-gray-500 hover:bg-gray-200 rounded-full transition-colors"
+                        title="AI Tools"
+                      >
                           <Icons.Plus />
                       </button>
                   </div>
@@ -254,7 +334,7 @@ export default function App() {
                               handleSendMessage();
                           }
                       }}
-                      placeholder="Ask anything..."
+                      placeholder={isRecording ? "Listening..." : "Ask anything..."}
                       className="
                           w-full max-h-[200px] pl-10 pr-24 md:pl-10 md:pr-32 py-2 
                           bg-transparent border-none focus:ring-0 resize-none 
@@ -279,10 +359,13 @@ export default function App() {
                          <span className="hidden md:inline">Reasoning</span>
                       </button>
 
-                      {/* Mic Button (Visual) */}
-                      {/* <button className="p-2 text-gray-900 hover:bg-gray-200 rounded-full">
+                      {/* Mic Button */}
+                      <button 
+                        onClick={handleVoiceInput}
+                        className={`p-2 rounded-full transition-colors ${isRecording ? 'bg-red-500 text-white hover:bg-red-600 animate-pulse' : 'text-gray-900 hover:bg-gray-200'}`}
+                      >
                           <Icons.Mic />
-                      </button> */}
+                      </button>
 
                       {/* Send Button */}
                       <button

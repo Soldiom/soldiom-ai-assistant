@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Message, RoleType } from '../types';
 import MarkdownRenderer from './MarkdownRenderer';
 import { ROLES, Icons } from '../constants';
+import * as HF from '../services/huggingFaceService';
 
 interface MessageBubbleProps {
   message: Message;
@@ -12,7 +13,9 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, currentRoleType 
   const isUser = message.role === 'user';
   const roleConfig = ROLES.find(r => r.id === currentRoleType);
   const sources = message.groundingChunks || [];
-  
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [isLoadingAudio, setIsLoadingAudio] = useState(false);
+
   // Remove duplicate sources based on URI
   const uniqueSources = sources.reduce((acc, current) => {
     const x = acc.find(item => item.web?.uri === current.web?.uri);
@@ -22,6 +25,24 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, currentRoleType 
       return acc;
     }
   }, [] as typeof sources);
+
+  const handlePlayTTS = async () => {
+    if (isPlaying) return; // Simple handling: simplistic prevents overlapping for now
+    setIsLoadingAudio(true);
+    try {
+      const blob = await HF.textToSpeech(message.text.substring(0, 500)); // Limit length for demo
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      audio.onended = () => setIsPlaying(false);
+      audio.play();
+      setIsPlaying(true);
+    } catch (e) {
+      console.error("TTS Error", e);
+      alert("Failed to play audio. Check HF_TOKEN.");
+    } finally {
+      setIsLoadingAudio(false);
+    }
+  };
 
   return (
     <div className={`flex w-full ${isUser ? 'justify-end' : 'justify-center'} py-4`}>
@@ -47,13 +68,39 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, currentRoleType 
             </div>
           )}
 
-          {/* AI Response */}
+          {/* AI/System Response */}
           {!isUser && (
-            <div className="text-gray-900 pt-1">
-              <div className="font-semibold text-sm mb-1 text-gray-900">
-                {roleConfig?.name || 'Soldiom'}
+            <div className="text-gray-900 pt-1 group">
+              <div className="flex items-center justify-between mb-1">
+                <div className="font-semibold text-sm text-gray-900">
+                   {message.role === 'system' ? 'System Tool' : (roleConfig?.name || 'Soldiom')}
+                </div>
+                {/* TTS Button */}
+                {message.role !== 'system' && !message.image && (
+                   <button 
+                      onClick={handlePlayTTS}
+                      disabled={isLoadingAudio || isPlaying}
+                      className="p-1 text-gray-400 hover:text-gray-900 rounded opacity-0 group-hover:opacity-100 transition-opacity"
+                      title="Read Aloud"
+                   >
+                      {isLoadingAudio ? (
+                        <div className="w-3 h-3 border border-gray-400 border-t-transparent rounded-full animate-spin"></div>
+                      ) : (
+                        <Icons.Speaker />
+                      )}
+                   </button>
+                )}
               </div>
-              <MarkdownRenderer content={message.text} />
+
+              {/* Render Image if available */}
+              {message.image ? (
+                <div className="mb-2">
+                  <img src={message.image} alt="Generated Content" className="rounded-xl max-w-sm border border-gray-200 shadow-sm" />
+                  {message.text && <p className="text-sm text-gray-500 mt-2">{message.text}</p>}
+                </div>
+              ) : (
+                <MarkdownRenderer content={message.text} />
+              )}
               
               {/* Sources Section */}
               {uniqueSources.length > 0 && (
